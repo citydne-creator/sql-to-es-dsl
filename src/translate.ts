@@ -40,7 +40,7 @@ function emit(statement: SelectStatement, sql: string, mapping?: MappingInput): 
   const result: TranslateResult = {
     index: statement.index.name,
     query: statement.where
-      ? compileExpr(statement.where, sql, mapping)
+      ? compileExpr(statement.where, sql, mapping, false)
       : { match_all: {} },
   };
 
@@ -70,39 +70,51 @@ function projectSource(statement: SelectStatement): true | string[] | undefined 
   });
 }
 
-function compileExpr(expr: Expr, sql: string, mapping?: MappingInput): EsQuery {
+function compileExpr(
+  expr: Expr,
+  sql: string,
+  mapping: MappingInput | undefined,
+  negated: boolean,
+): EsQuery {
   switch (expr.type) {
     case "and":
-      return bool("must", [
-        compileExpr(expr.left, sql, mapping),
-        compileExpr(expr.right, sql, mapping),
+      return bool(negated ? "should" : "must", [
+        compileExpr(expr.left, sql, mapping, negated),
+        compileExpr(expr.right, sql, mapping, negated),
       ]);
     case "or":
-      return bool("should", [
-        compileExpr(expr.left, sql, mapping),
-        compileExpr(expr.right, sql, mapping),
+      return bool(negated ? "must" : "should", [
+        compileExpr(expr.left, sql, mapping, negated),
+        compileExpr(expr.right, sql, mapping, negated),
       ]);
     case "not":
-      return { bool: { must_not: [compileExpr(expr.expr, sql, mapping)] } };
+      return compileExpr(expr.expr, sql, mapping, !negated);
     case "compare":
-      return compileCompare(expr, sql, mapping);
+      return compileCompare(expr, sql, mapping, negated);
     case "in":
-      return compileIn(expr, sql, mapping);
+      return compileIn(expr, sql, mapping, negated);
     case "between":
-      return compileBetween(expr, sql, mapping);
+      return compileBetween(expr, sql, mapping, negated);
     case "like":
-      return compileLike(expr, sql, mapping);
+      return compileLike(expr, sql, mapping, negated);
     case "is_null":
-      return compileIsNull(expr, sql, mapping);
+      return compileIsNull(expr, sql, mapping, negated);
   }
 }
 
-function compileCompare(expr: CompareExpr, sql: string, mapping?: MappingInput): EsQuery {
+function compileCompare(
+  expr: CompareExpr,
+  sql: string,
+  mapping: MappingInput | undefined,
+  negated: boolean,
+): EsQuery {
   const usage = expr.op === "eq" || expr.op === "neq" ? "exact" : "range";
   const field = resolveField(expr.field, mapping, usage, sql);
   assertLiteralType(field, expr.value.value, expr.value.loc, sql);
-  const query = compareQuery(field, expr.op, expr.value.value);
-  return expr.op === "neq" ? { bool: { must_not: [query] } } : query;
+  const leafOp = expr.op === "neq" ? "eq" : expr.op;
+  const query = compareQuery(field, leafOp, expr.value.value);
+  const negative = (expr.op === "neq") !== negated;
+  return applyLeafPolarity(field.path, query, negative);
 }
 
 function compareQuery(
@@ -118,27 +130,42 @@ function compareQuery(
   return { range: { [field.path]: { [bound]: value } } };
 }
 
-function compileIn(expr: InExpr, sql: string, mapping?: MappingInput): EsQuery {
+function compileIn(
+  expr: InExpr,
+  sql: string,
+  mapping: MappingInput | undefined,
+  negated: boolean,
+): EsQuery {
   const field = resolveField(expr.field, mapping, "exact", sql);
   for (const literal of expr.values) {
     assertLiteralType(field, literal.value, literal.loc, sql);
   }
   const values = expr.values.map((literal) => literal.value);
   const query = { terms: { [field.path]: values } };
-  return expr.negated ? { bool: { must_not: [query] } } : query;
+  return applyLeafPolarity(field.path, query, expr.negated !== negated);
 }
 
-function compileBetween(expr: BetweenExpr, sql: string, mapping?: MappingInput): EsQuery {
+function compileBetween(
+  expr: BetweenExpr,
+  sql: string,
+  mapping: MappingInput | undefined,
+  negated: boolean,
+): EsQuery {
   const field = resolveField(expr.field, mapping, "range", sql);
   assertLiteralType(field, expr.lower.value, expr.lower.loc, sql);
   assertLiteralType(field, expr.upper.value, expr.upper.loc, sql);
   const query = {
     range: { [field.path]: { gte: expr.lower.value, lte: expr.upper.value } },
   };
-  return expr.negated ? { bool: { must_not: [query] } } : query;
+  return applyLeafPolarity(field.path, query, expr.negated !== negated);
 }
 
-function compileLike(expr: LikeExpr, sql: string, mapping?: MappingInput): EsQuery {
+function compileLike(
+  expr: LikeExpr,
+  sql: string,
+  mapping: MappingInput | undefined,
+  negated: boolean,
+): EsQuery {
   const field = resolveField(expr.field, mapping, "like", sql);
   if (
     field.type !== "unmapped" &&
@@ -158,13 +185,28 @@ function compileLike(expr: LikeExpr, sql: string, mapping?: MappingInput): EsQue
       : plan.kind === "prefix"
         ? { prefix: { [field.path]: { value: plan.value } } }
         : { wildcard: { [field.path]: { value: plan.value } } };
-  return expr.negated ? { bool: { must_not: [query] } } : query;
+  return applyLeafPolarity(field.path, query, expr.negated !== negated);
 }
 
-function compileIsNull(expr: IsNullExpr, sql: string, mapping?: MappingInput): EsQuery {
+function compileIsNull(
+  expr: IsNullExpr,
+  sql: string,
+  mapping: MappingInput | undefined,
+  negated: boolean,
+): EsQuery {
   const field = resolveField(expr.field, mapping, "exists", sql);
   const exists = { exists: { field: field.path } };
-  return expr.negated ? exists : { bool: { must_not: [exists] } };
+  return expr.negated !== negated ? exists : { bool: { must_not: [exists] } };
+}
+
+function applyLeafPolarity(path: string, query: EsQuery, negative: boolean): EsQuery {
+  if (!negative) return query;
+  return {
+    bool: {
+      must: [{ exists: { field: path } }],
+      must_not: [query],
+    },
+  };
 }
 
 function bool(kind: "must" | "should", clauses: EsQuery[]): EsQuery {

@@ -10,14 +10,7 @@ export interface ResolvedField {
   requested: string;
 }
 
-const KEYWORD_LIKE = new Set([
-  "keyword",
-  "constant_keyword",
-  "wildcard",
-  "ip",
-  "boolean",
-  "version",
-]);
+const KEYWORD_LIKE = new Set(["keyword", "constant_keyword"]);
 
 const NUMERIC = new Set([
   "long",
@@ -47,6 +40,43 @@ export function isDate(type: string): boolean {
 
 export function isText(type: string): boolean {
   return type === "text" || type === "match_only_text" || type === "search_as_you_type";
+}
+
+function isExactLeaf(type: string): boolean {
+  return (
+    isKeywordLike(type) ||
+    type === "wildcard" ||
+    type === "ip" ||
+    type === "boolean" ||
+    type === "version" ||
+    isNumeric(type) ||
+    isDate(type)
+  );
+}
+
+function supportsLike(type: string): boolean {
+  return isKeywordLike(type) || type === "wildcard";
+}
+
+function supportsRange(type: string): boolean {
+  return (
+    isNumeric(type) ||
+    isDate(type) ||
+    type === "ip" ||
+    type === "version" ||
+    isKeywordLike(type)
+  );
+}
+
+function supportsSort(type: string): boolean {
+  return (
+    isKeywordLike(type) ||
+    isNumeric(type) ||
+    isDate(type) ||
+    type === "ip" ||
+    type === "boolean" ||
+    type === "version"
+  );
 }
 
 export function propertiesOf(mapping: MappingInput | undefined): Record<string, FieldMapping> | undefined {
@@ -114,12 +144,14 @@ function resolveExact(
   sql: string,
 ): ResolvedField {
   const type = walked.mapping.type ?? "object";
-  if (isKeywordLike(type) || isNumeric(type) || isDate(type)) {
+  if (isExactLeaf(type)) {
+    assertUsage(field, type, usage, sql);
     return { path: walked.path, type, requested: field.name };
   }
   if (isText(type)) {
     const keywordPath = keywordMultiField(walked, field.loc, sql);
     if (keywordPath) {
+      assertUsage(field, keywordPath.type, usage, sql);
       return keywordPath;
     }
     fail(
@@ -151,12 +183,17 @@ function resolveExact(
 
 function resolveRange(field: FieldRef, walked: WalkedField, sql: string): ResolvedField {
   const type = walked.mapping.type ?? "object";
-  if (isNumeric(type) || isDate(type) || type === "ip" || isKeywordLike(type)) {
+  if (supportsRange(type)) {
     return { path: walked.path, type, requested: field.name };
   }
   if (isText(type)) {
     const keywordPath = keywordMultiField(walked, field.loc, sql);
-    if (keywordPath) return keywordPath;
+    if (keywordPath) {
+      if (!supportsRange(keywordPath.type)) {
+        failRangeType(field, keywordPath.type, sql);
+      }
+      return keywordPath;
+    }
     fail(
       "semantic",
       `Range predicates on text field '${field.name}' are unsupported without a keyword multi-field`,
@@ -164,9 +201,40 @@ function resolveRange(field: FieldRef, walked: WalkedField, sql: string): Resolv
       sql,
     );
   }
+  if (type === "boolean" || type === "wildcard") {
+    failRangeType(field, type, sql);
+  }
   fail(
     "unsupported",
     `Field '${field.name}' has unsupported type '${type}' for a range predicate`,
+    field.loc,
+    sql,
+  );
+}
+
+function assertUsage(field: FieldRef, type: string, usage: FieldUsage, sql: string): void {
+  if (usage === "like" && !supportsLike(type)) {
+    fail(
+      "semantic",
+      `LIKE is not supported on ${type} field '${field.name}'`,
+      field.loc,
+      sql,
+    );
+  }
+  if (usage === "sort" && !supportsSort(type)) {
+    fail(
+      "semantic",
+      `Cannot sort on ${type} field '${field.name}'`,
+      field.loc,
+      sql,
+    );
+  }
+}
+
+function failRangeType(field: FieldRef, type: string, sql: string): never {
+  fail(
+    "semantic",
+    `Range predicates are unsupported on ${type} field '${field.name}'`,
     field.loc,
     sql,
   );
@@ -295,7 +363,13 @@ export function assertLiteralType(
     }
     return;
   }
-  if (isKeywordLike(field.type) || isText(field.type)) {
+  if (
+    isKeywordLike(field.type) ||
+    isText(field.type) ||
+    field.type === "wildcard" ||
+    field.type === "ip" ||
+    field.type === "version"
+  ) {
     if (valueType === "boolean") {
       fail(
         "semantic",

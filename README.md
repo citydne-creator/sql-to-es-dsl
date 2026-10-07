@@ -92,7 +92,11 @@ Full-text `MATCH()` is out of scope.
 **Mapping-aware fields.** When `options.mapping` is provided:
 
 - Unknown fields are rejected.
-- `keyword` (and similar exact types) are queried on the field itself.
+- `keyword` and `constant_keyword` are queried on the field itself and support
+  equality, `LIKE`, range, and sort.
+- `ip` and `version` support equality, range, and sort; `LIKE` is rejected.
+- `boolean` supports equality and sort; range and `LIKE` are rejected.
+- `wildcard` supports equality and `LIKE`; range and sort are rejected.
 - `text` equality, `LIKE`, `ORDER BY`, and ranges resolve to a `.keyword`
   multi-field when one exists. If several keyword multi-fields exist and none
   is named `keyword`, the compiler rejects the field as ambiguous rather than
@@ -102,14 +106,25 @@ Full-text `MATCH()` is out of scope.
   would be required).
 - Literal types are checked against the mapped field type.
 
-Without a mapping, names are copied into the DSL as written.
+Without a mapping, names are copied into the DSL as written. Missing mapping
+types are the caller's responsibility; the compiler does not guess them.
 
 **Ranges and `BETWEEN`.** Inclusive SQL `BETWEEN a AND b` becomes
 `range` with `gte` / `lte`. `<`, `<=`, `>`, `>=` use the corresponding range
 bounds.
 
-**NULL.** `IS NULL` → `bool.must_not` + `exists`. `IS NOT NULL` → `exists`.
-`= NULL` is rejected; use `IS NULL`.
+**NULL.** `IS NULL` is two-valued: `bool.must_not` + `exists`. `IS NOT NULL`
+→ `exists`. `NOT` around `IS [NOT] NULL` inverts those two forms. `= NULL` is
+rejected; use `IS NULL`.
+
+**Negation and three-valued logic.** `WHERE` keeps rows where the predicate is
+TRUE, not UNKNOWN. Missing or JSON-null fields make comparisons UNKNOWN, so
+`!=`, `<>`, `NOT IN`, `NOT BETWEEN`, `NOT LIKE`, and `NOT` of a comparison
+emit `exists` plus `must_not` of the positive leaf. `NOT` over `AND` / `OR`
+uses De Morgan rather than wrapping the whole tree in `must_not`, so
+`NOT (a = 1 AND b = 2)` can still be TRUE when `a` is non-matching and `b` is
+missing. Double `NOT` cancels. There is no global "all mentioned fields
+exist" guard.
 
 **LIKE** (backslash is the escape; there is no `ESCAPE` clause):
 
@@ -125,8 +140,9 @@ path, not on analyzed text. This is pattern matching, not Lucene
 `query_string` parsing.
 
 **Boolean composition.** `AND` binds tighter than `OR`. `NOT` applies to the
-predicate that follows. Parentheses override. `AND` / `OR` flatten into a
-single `bool.must` / `bool.should` (`minimum_should_match: 1`) when nested.
+predicate that follows and is compiled with polarity (De Morgan, double-negation
+elimination). Parentheses override. `AND` / `OR` flatten into a single
+`bool.must` / `bool.should` (`minimum_should_match: 1`) when nested.
 
 **Projection and pagination.** `SELECT a, b` sets `_source: ["a", "b"]`.
 `SELECT *` leaves `_source` unset (Elasticsearch default). `ORDER BY` emits

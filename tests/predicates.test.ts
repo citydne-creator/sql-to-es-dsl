@@ -17,13 +17,15 @@ describe("ranges, IN, BETWEEN, NULL, LIKE", () => {
     });
   });
 
-  it("treats != and <> as must_not term", () => {
-    expect(dsl("SELECT * FROM t WHERE status != 'x'").query).toEqual({
-      bool: { must_not: [{ term: { status: "x" } }] },
-    });
-    expect(dsl("SELECT * FROM t WHERE status <> 'x'").query).toEqual({
-      bool: { must_not: [{ term: { status: "x" } }] },
-    });
+  it("treats != and <> as exists plus must_not term", () => {
+    const expected = {
+      bool: {
+        must: [{ exists: { field: "status" } }],
+        must_not: [{ term: { status: "x" } }],
+      },
+    };
+    expect(dsl("SELECT * FROM t WHERE status != 'x'").query).toEqual(expected);
+    expect(dsl("SELECT * FROM t WHERE status <> 'x'").query).toEqual(expected);
   });
 
   it("emits terms for IN and NOT IN", () => {
@@ -31,7 +33,10 @@ describe("ranges, IN, BETWEEN, NULL, LIKE", () => {
       terms: { status: ["a", "b"] },
     });
     expect(dsl("SELECT * FROM t WHERE status NOT IN ('a')").query).toEqual({
-      bool: { must_not: [{ terms: { status: ["a"] } }] },
+      bool: {
+        must: [{ exists: { field: "status" } }],
+        must_not: [{ terms: { status: ["a"] } }],
+      },
     });
   });
 
@@ -46,7 +51,10 @@ describe("ranges, IN, BETWEEN, NULL, LIKE", () => {
       range: { age: { gte: 1, lte: 9 } },
     });
     expect(dsl("SELECT * FROM t WHERE age NOT BETWEEN 1 AND 9").query).toEqual({
-      bool: { must_not: [{ range: { age: { gte: 1, lte: 9 } } }] },
+      bool: {
+        must: [{ exists: { field: "age" } }],
+        must_not: [{ range: { age: { gte: 1, lte: 9 } } }],
+      },
     });
   });
 
@@ -94,7 +102,10 @@ describe("ranges, IN, BETWEEN, NULL, LIKE", () => {
 
   it("supports NOT LIKE and dangling-escape errors", () => {
     expect(dsl("SELECT * FROM t WHERE name NOT LIKE 'A%'").query).toEqual({
-      bool: { must_not: [{ prefix: { name: { value: "A" } } }] },
+      bool: {
+        must: [{ exists: { field: "name" } }],
+        must_not: [{ prefix: { name: { value: "A" } } }],
+      },
     });
     const error = err("SELECT * FROM t WHERE name LIKE 'A\\'");
     expect(error.code).toBe("semantic");

@@ -43,24 +43,58 @@ describe("boolean precedence", () => {
   it("applies NOT to the following predicate, not only the field", () => {
     const result = dsl("SELECT * FROM t WHERE NOT status = 'open'");
     expect(result.query).toEqual({
-      bool: { must_not: [{ term: { status: "open" } }] },
+      bool: {
+        must: [{ exists: { field: "status" } }],
+        must_not: [{ term: { status: "open" } }],
+      },
     });
   });
 
-  it("nests NOT around parenthesized OR", () => {
+  it("uses De Morgan for NOT around parenthesized OR", () => {
     const result = dsl(
       "SELECT * FROM t WHERE NOT (a = 1 OR b = 2)",
     );
     expect(result.query).toEqual({
       bool: {
-        must_not: [
+        must: [
           {
             bool: {
-              should: [{ term: { a: 1 } }, { term: { b: 2 } }],
-              minimum_should_match: 1,
+              must: [{ exists: { field: "a" } }],
+              must_not: [{ term: { a: 1 } }],
+            },
+          },
+          {
+            bool: {
+              must: [{ exists: { field: "b" } }],
+              must_not: [{ term: { b: 2 } }],
             },
           },
         ],
+      },
+    });
+  });
+
+  it("cancels double NOT and De-Morgans NOT AND without a global exists", () => {
+    expect(dsl("SELECT * FROM t WHERE NOT NOT status = 'open'").query).toEqual({
+      term: { status: "open" },
+    });
+    expect(dsl("SELECT * FROM t WHERE NOT (a = 1 AND b = 2)").query).toEqual({
+      bool: {
+        should: [
+          {
+            bool: {
+              must: [{ exists: { field: "a" } }],
+              must_not: [{ term: { a: 1 } }],
+            },
+          },
+          {
+            bool: {
+              must: [{ exists: { field: "b" } }],
+              must_not: [{ term: { b: 2 } }],
+            },
+          },
+        ],
+        minimum_should_match: 1,
       },
     });
   });
