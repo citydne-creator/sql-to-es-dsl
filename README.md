@@ -14,8 +14,23 @@ and no filesystem.
 
 ## Install
 
+This package is **not** published on the npm registry. Install v0.1.0 from the
+[GitHub release](https://github.com/citydne-creator/sql-to-es-dsl/releases/tag/v0.1.0):
+
 ```bash
-npm install sql-to-es-dsl
+npm install https://github.com/citydne-creator/sql-to-es-dsl/releases/download/v0.1.0/sql-to-es-dsl-0.1.0.tgz
+```
+
+- Tarball SHA256: `b7bc2677e4abeb5271ee8c39f77a01ab6398b46b403cfa7fb1db9e7c681a98cb`
+- Provenance (accepted source SHA): `251b27172a5e69655bee9806048117f21a7fd6a3`
+
+## Development
+
+```bash
+npm ci
+npm run typecheck
+npm test
+npm run build
 ```
 
 ## API
