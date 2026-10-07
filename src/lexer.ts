@@ -1,5 +1,5 @@
 import { fail } from "./errors.ts";
-import type { SourcePosition } from "./types.ts";
+import { MAX_SQL_LENGTH, MAX_TOKEN_COUNT, type SourcePosition } from "./types.ts";
 
 export type TokenKind =
   | "eof"
@@ -77,56 +77,56 @@ export interface Token {
   value?: string | number;
 }
 
-const KEYWORDS: Record<string, TokenKind> = {
-  select: "select",
-  from: "from",
-  where: "where",
-  and: "and",
-  or: "or",
-  not: "not",
-  order: "order",
-  by: "by",
-  asc: "asc",
-  desc: "desc",
-  limit: "limit",
-  offset: "offset",
-  in: "in",
-  between: "between",
-  like: "like",
-  is: "is",
-  null: "null",
-  true: "true",
-  false: "false",
-  as: "as",
-  join: "join",
-  inner: "inner",
-  left: "left",
-  right: "right",
-  full: "full",
-  cross: "cross",
-  outer: "outer",
-  on: "on",
-  union: "union",
-  all: "all",
-  group: "group",
-  having: "having",
-  distinct: "distinct",
-  update: "update",
-  delete: "delete",
-  insert: "insert",
-  into: "into",
-  set: "set",
-  create: "create",
-  drop: "drop",
-  alter: "alter",
-  with: "with",
-  exists: "exists",
-  case: "case",
-  when: "when",
-  then: "then",
-  else: "else",
-  end: "end",
-};
+const KEYWORDS = new Map<string, TokenKind>([
+  ["select", "select"],
+  ["from", "from"],
+  ["where", "where"],
+  ["and", "and"],
+  ["or", "or"],
+  ["not", "not"],
+  ["order", "order"],
+  ["by", "by"],
+  ["asc", "asc"],
+  ["desc", "desc"],
+  ["limit", "limit"],
+  ["offset", "offset"],
+  ["in", "in"],
+  ["between", "between"],
+  ["like", "like"],
+  ["is", "is"],
+  ["null", "null"],
+  ["true", "true"],
+  ["false", "false"],
+  ["as", "as"],
+  ["join", "join"],
+  ["inner", "inner"],
+  ["left", "left"],
+  ["right", "right"],
+  ["full", "full"],
+  ["cross", "cross"],
+  ["outer", "outer"],
+  ["on", "on"],
+  ["union", "union"],
+  ["all", "all"],
+  ["group", "group"],
+  ["having", "having"],
+  ["distinct", "distinct"],
+  ["update", "update"],
+  ["delete", "delete"],
+  ["insert", "insert"],
+  ["into", "into"],
+  ["set", "set"],
+  ["create", "create"],
+  ["drop", "drop"],
+  ["alter", "alter"],
+  ["with", "with"],
+  ["exists", "exists"],
+  ["case", "case"],
+  ["when", "when"],
+  ["then", "then"],
+  ["else", "else"],
+  ["end", "end"],
+]);
 
 export class Lexer {
   private readonly sql: string;
@@ -234,7 +234,7 @@ export class Lexer {
       this.advance();
     }
     const lexeme = this.sql.slice(start.offset, this.offset);
-    const keyword = KEYWORDS[lexeme.toLowerCase()];
+    const keyword = KEYWORDS.get(lexeme.toLowerCase());
     if (keyword) {
       return this.token(keyword, lexeme, start);
     }
@@ -308,7 +308,15 @@ export class Lexer {
     const lexeme = this.sql.slice(start.offset, this.offset);
     const value = Number(lexeme);
     if (!Number.isFinite(value)) {
-      fail("syntax", `Invalid numeric literal '${lexeme}'`, start, this.sql);
+      fail("syntax", `Invalid numeric literal '${displayLexeme(lexeme)}'`, start, this.sql);
+    }
+    if (!lexeme.includes(".") && !isExactSafeInteger(lexeme, value)) {
+      fail(
+        "syntax",
+        `Integer literal '${displayLexeme(lexeme)}' is outside the safe integer range`,
+        start,
+        this.sql,
+      );
     }
     return { kind: "number", lexeme, start, end: this.position(), value };
   }
@@ -355,11 +363,41 @@ function isDigit(ch: string): boolean {
   return ch >= "0" && ch <= "9";
 }
 
+function isExactSafeInteger(lexeme: string, value: number): boolean {
+  if (!Number.isSafeInteger(value)) return false;
+  try {
+    return BigInt(lexeme) === BigInt(value);
+  } catch {
+    return false;
+  }
+}
+
+function displayLexeme(lexeme: string): string {
+  if (lexeme.length <= 32) return lexeme;
+  return `${lexeme.slice(0, 31)}…`;
+}
+
 export function tokenize(sql: string): Token[] {
+  if (sql.length > MAX_SQL_LENGTH) {
+    fail(
+      "limit",
+      `SQL exceeds the maximum length of ${MAX_SQL_LENGTH} UTF-16 code units`,
+      { offset: 0, line: 1, column: 1 },
+      sql,
+    );
+  }
   const lexer = new Lexer(sql);
   const tokens: Token[] = [];
   for (;;) {
     const token = lexer.next();
+    if (token.kind !== "eof" && tokens.length >= MAX_TOKEN_COUNT) {
+      fail(
+        "limit",
+        `SQL exceeds the maximum of ${MAX_TOKEN_COUNT} tokens`,
+        token.start,
+        sql,
+      );
+    }
     tokens.push(token);
     if (token.kind === "eof") break;
   }

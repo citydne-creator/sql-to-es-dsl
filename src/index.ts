@@ -1,8 +1,16 @@
-import { SqlTranslationError } from "./errors.ts";
+import { isSqlTranslationError, SqlTranslationError } from "./errors.ts";
 import { compile } from "./translate.ts";
+import { MAX_SQL_LENGTH } from "./types.ts";
 import type { TranslateOptions, TranslateResult } from "./types.ts";
 
 export { isSqlTranslationError, SqlTranslationError } from "./errors.ts";
+export {
+  MAX_EXPRESSION_DEPTH,
+  MAX_IN_TERMS,
+  MAX_PREDICATE_LEAVES,
+  MAX_SQL_LENGTH,
+  MAX_TOKEN_COUNT,
+} from "./types.ts";
 export type {
   EsQuery,
   EsSortClause,
@@ -28,5 +36,25 @@ export function translate(sql: string, options: TranslateOptions = {}): Translat
       position: { offset: 0, line: 1, column: 1 },
     });
   }
-  return compile(sql, options.mapping);
+  if (sql.length > MAX_SQL_LENGTH) {
+    throw new SqlTranslationError({
+      code: "limit",
+      message: `SQL exceeds the maximum length of ${MAX_SQL_LENGTH} UTF-16 code units`,
+      position: { offset: 0, line: 1, column: 1 },
+      sql,
+    });
+  }
+  try {
+    return compile(sql, options.mapping);
+  } catch (caught) {
+    if (isSqlTranslationError(caught)) throw caught;
+    if (caught instanceof RangeError) {
+      throw new SqlTranslationError({
+        code: "limit",
+        message: "SQL exceeds compiler limits",
+        position: { offset: 0, line: 1, column: 1 },
+      });
+    }
+    throw caught;
+  }
 }

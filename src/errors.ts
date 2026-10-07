@@ -7,10 +7,34 @@ export interface SqlTranslationErrorOptions {
   sql?: string;
 }
 
+const MAX_SNIPPET_CHARS = 80;
+const MAX_STORED_SQL = 256;
+const MAX_MESSAGE = 240;
+
+function boundText(text: string, max: number): string {
+  if (text.length <= max) return text;
+  return `${text.slice(0, Math.max(0, max - 1))}…`;
+}
+
 function snippet(sql: string, position: SourcePosition): string {
   const lines = sql.split(/\r?\n/);
-  const line = lines[position.line - 1] ?? "";
-  const caretPad = " ".repeat(Math.max(0, position.column - 1));
+  let line = lines[position.line - 1] ?? "";
+  let column = position.column;
+  if (line.length > MAX_SNIPPET_CHARS) {
+    const col0 = Math.max(0, column - 1);
+    const half = Math.floor(MAX_SNIPPET_CHARS / 2);
+    let start = Math.max(0, col0 - half);
+    let end = start + MAX_SNIPPET_CHARS;
+    if (end > line.length) {
+      end = line.length;
+      start = Math.max(0, end - MAX_SNIPPET_CHARS);
+    }
+    const prefix = start > 0 ? "…" : "";
+    const suffix = end < line.length ? "…" : "";
+    line = `${prefix}${line.slice(start, end)}${suffix}`;
+    column = prefix.length + (col0 - start) + 1;
+  }
+  const caretPad = " ".repeat(Math.max(0, column - 1));
   return `${position.line}| ${line}\n${" ".repeat(String(position.line).length)}| ${caretPad}^`;
 }
 
@@ -25,15 +49,19 @@ export class SqlTranslationError extends Error {
     const where = `${options.position.line}:${options.position.column}`;
     const snippetText =
       options.sql !== undefined ? snippet(options.sql, options.position) : undefined;
+    const message = boundText(options.message, MAX_MESSAGE);
     super(
       snippetText
-        ? `${options.message} at ${where}\n${snippetText}`
-        : `${options.message} at ${where}`,
+        ? `${message} at ${where}\n${snippetText}`
+        : `${message} at ${where}`,
     );
     this.name = "SqlTranslationError";
     this.code = options.code;
     this.position = options.position;
-    this.sql = options.sql;
+    this.sql =
+      options.sql !== undefined && options.sql.length <= MAX_STORED_SQL
+        ? options.sql
+        : undefined;
     this.snippet = snippetText;
   }
 

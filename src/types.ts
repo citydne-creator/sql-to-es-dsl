@@ -48,4 +48,21 @@ export interface TranslateResult {
   _source?: true | string[];
 }
 
-export type SqlTranslationErrorCode = "syntax" | "unsupported" | "semantic";
+export type SqlTranslationErrorCode = "syntax" | "unsupported" | "semantic" | "limit";
+
+/** Maximum SQL length in UTF-16 code units (64 Ki). */
+export const MAX_SQL_LENGTH = 64 * 1024;
+
+/** Maximum number of tokens, excluding EOF. */
+export const MAX_TOKEN_COUNT = 8192;
+
+/** Maximum nesting of `NOT` and parenthesized expressions. */
+export const MAX_EXPRESSION_DEPTH = 64;
+
+/**
+ * Maximum number of WHERE predicate leaves.
+ * Caps left-deep `AND`/`OR` trees so compile recursion cannot overflow. */
+export const MAX_PREDICATE_LEAVES = 256;
+
+/** Maximum number of literals in a single `IN` list. */
+export const MAX_IN_TERMS = 1024;

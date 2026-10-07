@@ -52,7 +52,9 @@ const result = translate(
 | `size`    | When `LIMIT` is present      |
 
 Failures throw `SqlTranslationError` with `code` (`syntax` \| `unsupported` \|
-`semantic`) and `position` (`offset`, `line`, `column`).
+`semantic` \| `limit`) and `position` (`offset`, `line`, `column`). Error
+messages and snippets are bounded so oversized input is not copied into the
+exception.
 
 ## Supported grammar
 
@@ -83,6 +85,15 @@ Identifiers may be unquoted (`status`), dotted (`user.name`), double-quoted, or
 backtick-quoted. String literals use SQL quoting (`'it''s'`). `--` line comments
 and `/* */` block comments are skipped. An optional trailing semicolon is
 allowed. `LIMIT` / `OFFSET` may appear in either order.
+
+`FROM` names exactly one index. Quoted names may include ordinary hyphens and
+dots (`"logs-2024"`, `"my.index"`). Wildcards, commas, slashes, backslashes,
+colons, control characters, and the names `.` / `..` are rejected.
+
+Integer literals, `LIMIT`, and `OFFSET` must be IEEE-754 safe integers
+(`Number.isSafeInteger`; absolute value at most `2^53-1`). Finite fractional
+literals use JavaScript `Number` semantics (binary floating point; `0.1` is
+stored as an IEEE-754 double, not a decimal).
 
 ## Semantic decisions
 
@@ -163,6 +174,10 @@ offending token:
 - Functions (`COUNT`, `MATCH`, `CAST`, …), `CASE`, aliases (`AS`)
 - Arithmetic and field-to-field comparisons
 - Empty `IN ()` lists; negative `LIMIT` / `OFFSET`
+- SQL longer than 64 Ki UTF-16 code units, more than 8192 tokens, more than 64
+  nested `NOT` / parentheses, more than 256 WHERE predicates, or more than 1024
+  `IN` terms (`limit`)
+- Integer literals or `LIMIT` / `OFFSET` outside the safe integer range
 
 ## Examples
 
@@ -203,10 +218,30 @@ behavior (term/range/exists/bool/wildcard/prefix). They are **not** a copy of
 Elastic’s Elasticsearch SQL plugin, its ELv2-licensed sources, or its test
 corpus.
 
+## Input limits
+
+Conservative fixed bounds; exceeding any of them throws `SqlTranslationError`
+with `code: "limit"` rather than a raw `RangeError`:
+
+| Bound | Maximum |
+|-------|---------|
+| SQL text | 65,536 UTF-16 code units |
+| Tokens (excluding EOF) | 8,192 |
+| Nested `NOT` / parentheses | 64 |
+| WHERE predicate leaves | 256 |
+| Literals in one `IN` list | 1,024 |
+
+The predicate-leaf bound also caps left-deep `AND` / `OR` compile recursion.
+
+These constants are exported as `MAX_SQL_LENGTH`, `MAX_TOKEN_COUNT`,
+`MAX_EXPRESSION_DEPTH`, `MAX_PREDICATE_LEAVES`, and `MAX_IN_TERMS`.
+
 ## Limitations
 
 - One index, one SELECT, no analytics.
-- JavaScript numbers for numeric literals (not arbitrary-precision integers).
+- JavaScript `Number` values for numeric literals: safe integers only for
+  integer forms; fractions follow IEEE-754 double semantics, not decimal or
+  arbitrary-precision integers.
 - No `nested` query generation, no geo predicates, no full-text `match`.
 - Keyword resolution prefers a multi-field named `keyword`; it will not invent
   an analyzer or guess among several differently named exact subfields.

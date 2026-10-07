@@ -14,7 +14,12 @@ import type {
 } from "./ast.ts";
 import { fail } from "./errors.ts";
 import { type Token, type TokenKind, tokenize } from "./lexer.ts";
-import type { SourcePosition } from "./types.ts";
+import {
+  MAX_EXPRESSION_DEPTH,
+  MAX_IN_TERMS,
+  MAX_PREDICATE_LEAVES,
+  type SourcePosition,
+} from "./types.ts";
 
 const COMPARE_OPS: Partial<Record<TokenKind, CompareOp>> = {
   eq: "eq",
@@ -45,6 +50,8 @@ class Parser {
   private readonly sql: string;
   private readonly tokens: Token[];
   private index = 0;
+  private depth = 0;
+  private leaves = 0;
 
   constructor(sql: string) {
     this.sql = sql;
@@ -127,7 +134,7 @@ class Parser {
         extra.kind === "select" ? "unsupported" : "syntax",
         extra.kind === "select"
           ? "Multiple statements are not supported"
-          : `Unexpected token '${extra.lexeme}'`,
+          : `Unexpected token '${displayLexeme(extra.lexeme)}'`,
         extra.start,
         this.sql,
       );
@@ -208,7 +215,9 @@ class Parser {
           this.sql,
         );
       }
-      return { name: identValue(token), loc: token.start };
+      const name = identValue(token);
+      assertIndexName(name, token.start, this.sql);
+      return { name, loc: token.start };
     }
     if (token.kind === "star") {
       fail("unsupported", "FROM must name exactly one index", token.start, this.sql);
@@ -257,19 +266,30 @@ class Parser {
   private parseNot(): Expr {
     if (this.match("not")) {
       const loc = this.previous().start;
-      return { type: "not", loc, expr: this.parseNot() };
+      this.enter(loc);
+      try {
+        return { type: "not", loc, expr: this.parseNot() };
+      } finally {
+        this.leave();
+      }
     }
     return this.parsePredicate();
   }
 
   private parsePredicate(): Expr {
     if (this.match("lparen")) {
-      if (this.peek().kind === "select") {
-        fail("unsupported", "Subqueries are not supported", this.peek().start, this.sql);
+      const loc = this.previous().start;
+      this.enter(loc);
+      try {
+        if (this.peek().kind === "select") {
+          fail("unsupported", "Subqueries are not supported", this.peek().start, this.sql);
+        }
+        const expr = this.parseOr();
+        this.expect("rparen", "Expected ')' to close parenthesized expression");
+        return expr;
+      } finally {
+        this.leave();
       }
-      const expr = this.parseOr();
-      this.expect("rparen", "Expected ')' to close parenthesized expression");
-      return expr;
     }
     if (this.peek().kind === "exists") {
       fail("unsupported", "EXISTS subqueries are not supported", this.peek().start, this.sql);
@@ -279,6 +299,7 @@ class Parser {
     }
 
     const field = this.parseFieldRef("Expected a field name in the WHERE clause");
+    this.addLeaf(field.loc);
     if (this.peek().kind === "lparen") {
       fail(
         "unsupported",
@@ -342,6 +363,14 @@ class Parser {
     }
     const values = [this.parseLiteral()];
     while (this.match("comma")) {
+      if (values.length >= MAX_IN_TERMS) {
+        fail(
+          "limit",
+          `IN lists cannot contain more than ${MAX_IN_TERMS} values`,
+          this.peek().start,
+          this.sql,
+        );
+      }
       values.push(this.parseLiteral());
     }
     this.expect("rparen", "Expected ')' after IN list");
@@ -473,10 +502,42 @@ class Parser {
     }
     this.advance();
     const value = Number(token.value);
-    if (!Number.isInteger(value) || value < 0) {
+    if (
+      token.lexeme.includes(".") ||
+      !Number.isSafeInteger(value) ||
+      value < 0
+    ) {
       fail("semantic", `${clause} must be a non-negative integer`, token.start, this.sql);
     }
     return { value, loc: token.start };
+  }
+
+  private enter(loc: SourcePosition): void {
+    this.depth += 1;
+    if (this.depth > MAX_EXPRESSION_DEPTH) {
+      fail(
+        "limit",
+        `Expression nesting exceeds the maximum of ${MAX_EXPRESSION_DEPTH}`,
+        loc,
+        this.sql,
+      );
+    }
+  }
+
+  private leave(): void {
+    this.depth -= 1;
+  }
+
+  private addLeaf(loc: SourcePosition): void {
+    this.leaves += 1;
+    if (this.leaves > MAX_PREDICATE_LEAVES) {
+      fail(
+        "limit",
+        `WHERE clause exceeds the maximum of ${MAX_PREDICATE_LEAVES} predicates`,
+        loc,
+        this.sql,
+      );
+    }
   }
 
   private rejectClause(kind: TokenKind, message: string): void {
@@ -519,4 +580,40 @@ class Parser {
 
 function identValue(token: Token): string {
   return typeof token.value === "string" ? token.value : token.lexeme;
+}
+
+function displayLexeme(lexeme: string): string {
+  if (lexeme.length <= 32) return lexeme;
+  return `${lexeme.slice(0, 31)}…`;
+}
+
+function assertIndexName(name: string, loc: SourcePosition, sql: string): void {
+  if (name === "." || name === "..") {
+    fail(
+      "unsupported",
+      "FROM must name a single index; '.' and '..' are not valid index names",
+      loc,
+      sql,
+    );
+  }
+  for (let i = 0; i < name.length; i += 1) {
+    const code = name.charCodeAt(i);
+    const ch = name[i]!;
+    if (
+      code < 32 ||
+      code === 127 ||
+      ch === "*" ||
+      ch === "," ||
+      ch === "/" ||
+      ch === "\\" ||
+      ch === ":"
+    ) {
+      fail(
+        "unsupported",
+        "FROM must name a single index; wildcards, paths, and cluster selectors are not supported",
+        loc,
+        sql,
+      );
+    }
+  }
 }

@@ -247,7 +247,7 @@ function keywordMultiField(
 ): ResolvedField | undefined {
   const fields = walked.mapping.fields;
   if (!fields) return undefined;
-  const keyword = fields.keyword;
+  const keyword = ownField(fields, "keyword");
   if (keyword && isKeywordLike(keyword.type ?? "keyword")) {
     return {
       path: `${walked.path}.keyword`,
@@ -255,8 +255,8 @@ function keywordMultiField(
       requested: walked.path,
     };
   }
-  const keywordLike = Object.entries(fields).filter(([, mapping]) =>
-    isKeywordLike(mapping.type ?? ""),
+  const keywordLike = Object.entries(fields).filter(
+    ([name, mapping]) => Object.hasOwn(fields, name) && isKeywordLike(mapping.type ?? ""),
   );
   if (keywordLike.length === 1) {
     const [name, mapping] = keywordLike[0]!;
@@ -295,7 +295,7 @@ function walk(
   for (let i = 0; i < parts.length; i += 1) {
     const part = parts[i]!;
     path = path ? `${path}.${part}` : part;
-    mapping = currentProps[part];
+    mapping = ownField(currentProps, part);
     if (!mapping) {
       fail("semantic", `Unknown field '${name}'`, loc, sql);
     }
@@ -383,4 +383,14 @@ export function assertLiteralType(
 
 function describeValue(value: string | number | boolean): string {
   return typeof value === "string" ? `string ${JSON.stringify(value)}` : String(value);
+}
+
+function ownField(
+  record: Record<string, FieldMapping>,
+  key: string,
+): FieldMapping | undefined {
+  if (!Object.hasOwn(record, key)) return undefined;
+  const value = Object.getOwnPropertyDescriptor(record, key)?.value;
+  if (!value || typeof value !== "object") return undefined;
+  return value as FieldMapping;
 }
