@@ -1,0 +1,16 @@
+# Normalize text to LF in the repository and working tree.
+* text=auto eol=lf
+
+*.ts text eol=lf
+*.js text eol=lf
+*.json text eol=lf
+*.md text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+*.png binary
+*.jpg binary
+*.zip binary
